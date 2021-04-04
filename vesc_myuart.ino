@@ -1,9 +1,11 @@
 /*
-    VESC UART BLE LORA extender
+VESC extender
 */
 #include "Arduino.h"
 #include <TFT_eSPI.h>
 #include <Button2.h>
+//#include <EBYTE.h>    //does not support e22
+#include "LoRa_E22.h"
 #include <CircularBuffer.h>
 
 #include <BLEDevice.h>
@@ -11,15 +13,9 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-BLEServer *pServer = NULL;
-BLECharacteristic * pTxCharacteristic;
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
-uint8_t txValue = 0;
 
 // See the following for generating UUIDs:
 // https://www.uuidgenerator.net/
-
 #define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E" // UART service UUID
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -29,16 +25,23 @@ uint8_t txValue = 0;
 #define BUTTON_1 35
 #define BUTTON_2 0
 
+//#define LoRa_E22_DEBUG
 // EByte module connection
 #define EB_M0 21
 #define EB_M1 22
 #define EB_RX 17
 #define EB_TX 32
 #define EB_AUX 33
+#define HARDWARE_SERIAL_SELECTABLE_PIN
 
 // Vesc serial connection
 #define VESC_RX 26
 #define VESC_TX 25
+//#define VESC_RX 17
+//#define VESC_TX 32
+
+//LoRa_E22 e22ttl100(&Serial2, EB_TX, EB_RX, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
+LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
 
 TFT_eSPI tft = TFT_eSPI(135, 240); // Invoke custom library
 
@@ -51,7 +54,30 @@ static CircularBuffer<uint8_t, 2048> loraToSend;
 const size_t max_buf = 2048;
 uint8_t buf[max_buf];
 uint8_t bufB[max_buf];
-uint8_t ISRbuf[max_buf];
+
+//used for communication synchrtonisation to avoid packet loss
+volatile bool inLoraSendMode = true;  //toogled in each synchronisation timer interrupt
+volatile long lastModeToggleMillis = millis();    //store millis of last timer interrupt
+hw_timer_t * timer = NULL;
+//portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+
+BLEServer *pServer = NULL;
+BLECharacteristic * pTxCharacteristic;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+uint8_t txValue = 0;
+
+// called at each timer innterrupt for communication syncghronisation
+void IRAM_ATTR onTime() {
+   //portENTER_CRITICAL_ISR(&timerMux);
+   inLoraSendMode = !inLoraSendMode;
+   lastModeToggleMillis = millis();
+   Serial.printf("Send Mode switched: %d \n", inLoraSendMode);
+   //portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+void printParameters(struct Configuration configuration);
+void printModuleInformation(struct ModuleInformation moduleInformation);
 
 void initTDisplay()
 {
@@ -80,23 +106,22 @@ class MyCallbacks: public BLECharacteristicCallbacks {
       std::string rxValue = pCharacteristic->getValue();
 
       if (rxValue.length() > 0) {
-
+        Serial.println();
         //A) send to lora
         Serial.print(rxValue.length());
         Serial.print("B");
-        for (int i = 0; i < rxValue.length(); i++)
+        for (int i = 0; i < rxValue.length(); i++){
           loraToSend.push((uint8_t) rxValue[i]);
-          
+          bufB[i] = (uint8_t) rxValue[i];
+        }
+
+        //TODO remove this from ISR
         //B) send to serial / VESC 
-        for (int i = 0; i < rxValue.length(); i++)
-          ISRbuf[i] = rxValue[i];
-        Serial.print(rxValue.length());
-        Serial.print('B');
-        size_t written = Serial1.write(ISRbuf, rxValue.length()); // Send to Vesc
+        //Serial.print(rxValue.length());
+        //Serial.print('B');
+        size_t written = Serial1.write(bufB, rxValue.length()); // Send to Vesc
         Serial.print(written);
         Serial.print("V ");
-        Serial.println();
-       
         
       }
     }
@@ -112,40 +137,89 @@ void setup() {
   // Vesc serial
   Serial1.begin(115200, SERIAL_8N1, VESC_TX, VESC_RX); // Start Vesc serial
 
-  //EBYE serial
-  Serial2.begin(115200, SERIAL_8N1, EB_TX, EB_RX);
-  pinMode(EB_AUX, INPUT); //ebyte is ready if high
+  //EBYTE serial
+  //Serial2.begin(115200, SERIAL_8N1, EB_TX, EB_RX);
+  //pinMode(EB_AUX, INPUT); //ebyte is ready if high
+  // Startup all pins and UART
+  e22ttl100.begin();
+  ResponseStructContainer c;
+  c = e22ttl100.getConfiguration();
+  // It's important get configuration pointer before all other operation
+  Configuration configuration = *(Configuration*) c.data;
+  Serial.println(c.status.getResponseDescription());
+  Serial.println(c.status.code);
+//  printParameters(configuration);
+  configuration.ADDL = 0x03;
+  configuration.ADDH = 0x00;
+  configuration.NETID = 0x00;
+  configuration.CHAN = 23;
+  configuration.SPED.uartBaudRate = UART_BPS_9600;
+  //configuration.SPED.uartBaudRate = UART_BPS_38400;
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_010_24;
+  configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
+  configuration.SPED.uartParity = MODE_00_8N1;
+  configuration.OPTION.subPacketSetting = SPS_240_00;
+  configuration.OPTION.RSSIAmbientNoise = RSSI_AMBIENT_NOISE_DISABLED;
+  configuration.OPTION.transmissionPower = POWER_22;
+  configuration.TRANSMISSION_MODE.enableRSSI = RSSI_DISABLED;
+  configuration.TRANSMISSION_MODE.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
+  configuration.TRANSMISSION_MODE.enableRepeater = REPEATER_DISABLED;
+  configuration.TRANSMISSION_MODE.enableLBT = LBT_DISABLED;
+  configuration.TRANSMISSION_MODE.WORTransceiverControl = WOR_RECEIVER;
+  configuration.TRANSMISSION_MODE.WORPeriod = WOR_2000_011;
+  // Set configuration changed and set to not hold the configuration
+  ResponseStatus rs = e22ttl100.setConfiguration(configuration, WRITE_CFG_PWR_DWN_SAVE);
+  Serial.println(rs.getResponseDescription());
+  Serial.println(rs.code);
+
+  c = e22ttl100.getConfiguration();
+  // It's important get configuration pointer before all other operation
+  configuration = *(Configuration*) c.data;
+  Serial.println(c.status.getResponseDescription());
+  Serial.println(c.status.code);
+  printParameters(configuration);
+  /*
+  ResponseStructContainer cMi;
+  cMi = e22ttl100.getModuleInformation();
+  // It's important get information pointer before all other operation
+  ModuleInformation mi = *(ModuleInformation*)cMi.data;
+  Serial.println(cMi.status.getResponseDescription());
+  Serial.println(cMi.status.code);
+  cMi.close(); 
+  c.close(); */
 
   // Create the BLE Device
   BLEDevice::init("Vesc Extender");
-
   // Create the BLE Server
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
-
   // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
-
   // Create a BLE Characteristic
   pTxCharacteristic = pService->createCharacteristic(
                     CHARACTERISTIC_UUID_TX,
                     BLECharacteristic::PROPERTY_NOTIFY
                   );
-                      
   pTxCharacteristic->addDescriptor(new BLE2902());
-
   BLECharacteristic * pRxCharacteristic = pService->createCharacteristic(
                        CHARACTERISTIC_UUID_RX,
                       BLECharacteristic::PROPERTY_WRITE
                     );
-
   pRxCharacteristic->setCallbacks(new MyCallbacks());
-
   // Start the service
   pService->start();
-
   // Start advertising
   pServer->getAdvertising()->start();
+
+
+   // Configure the Prescaler at 80 the quarter of the ESP32 is cadence at 80Mhz
+   // 80000000 / 80 = 1000000 tics / seconde
+   timer = timerBegin(0, 80, true);                
+   timerAttachInterrupt(timer, &onTime, true);
+   
+   // Sets an alarm to sound every second
+   timerAlarmWrite(timer, 1000000, true);           
+   timerAlarmEnable(timer);
   
   Serial.println("Waiting a client connection to notify...");
 }
@@ -171,71 +245,22 @@ void debugPacket(uint8_t *buf, int len)
   Serial.println(")");
 }
 
-//send lora buffer
-//at longest for 300ms
-void sendLoraBuffer()
-{
- size_t len, avail;
- long myTimeout = 300;
- long myTimer = millis();
- while (millis() < (myTimeout + myTimer)) {
-  int loraAvailableForWrite = Serial2.availableForWrite();
-  len = loraToSend.size() < loraAvailableForWrite ? loraToSend.size() : loraAvailableForWrite;
-  if (!len){
-      myTimeout = 0;  //send --> exit loop
-    }
-  if (len && loraAvailableForWrite >= 58)
-  {
-    //Serial.printf("len: %d, ", len);
-    delay(5);
-    loraAvailableForWrite = Serial2.availableForWrite();
-    len = loraToSend.size() < loraAvailableForWrite ? loraToSend.size() : loraAvailableForWrite;
-    //Serial.printf("len: %d, ", len);
-     
-    //Serial.printf("loraToSend.size() %d, loraAvailableForWrite %d\n", loraToSend.size(), loraAvailableForWrite);
-    //Serial.println();
-    //len = loraToSend.size() < loraAvailableForWrite ? loraToSend.size() : loraAvailableForWrite;
-    bool isLoraModuleReady = digitalRead(EB_AUX) == HIGH;
-    //Serial.printf("isLoraModuleReady: %d, len: %d\n", isLoraModuleReady, len);
-
-    if (isLoraModuleReady)
-    {
-      //Serial.printf("loraToSend.size() %d, loraAvailableForWrite %d\n", loraToSend.size(), loraAvailableForWrite);
-      for (int i = 0; i < len; i++)
-        buf[i] = loraToSend.shift();
-
-      size_t written = Serial2.write(buf, len); // Send to Lora
-      Serial.print(written);
-      Serial.print("L");
-      Serial.println();
-      //debugPacket(buf, len);
-    }
-  }
- }
-}
-
 void loop() {
 
     loopStep++;
     size_t len, avail;
 
    // Vesc data available?
-   //send to bluetooth and/or lora
+   // send to bluetooth and/or lora
    len = 0;
    avail = Serial1.available();
    if (avail)
         {
-          Serial.printf("avail: %d, ", avail);
-          delay(10);
-          avail = Serial1.available();
-          Serial.printf("avail: %d, ", avail);
-          
           len = Serial1.readBytes(buf, avail < max_buf ? avail : max_buf);
           //A) send to Lora
           Serial.print(len);
           Serial.print("V");
           appendToLora(buf, len);
-          sendLoraBuffer();
           //B) send to bluetooth if connected
           if (deviceConnected) {           
             Serial.print(len);
@@ -249,20 +274,28 @@ void loop() {
           }
           //debugPacket(buf, len);
         }
-
-  delay(10);
+ 
     
   // LoRa data available?
   len = 0;
-  avail = Serial2.available();
-  if (avail)
+  if (e22ttl100.available())
   {
-    Serial.printf("avail: %d, ", avail);
-    delay(5);
-    avail = Serial2.available();
-    Serial.printf("avail: %d, ", avail);
-    len = Serial2.readBytes(buf, avail < max_buf ? avail : max_buf);
+     //delay(10);
+     //TODO reset synchronise communication timer
+     //TODO only for first packet in receipe mode\
+     //TODO use specific synchronisation byte for this
+    ResponseContainer rsc = e22ttl100.receiveMessage();
+    if (rsc.status.code!=1){
+      Serial.println(rsc.status.getResponseDescription());
+     }else{
+      for (int i = 0; i < rsc.data.length(); i++)
+        buf[i] = rsc.data[i];
+      // Print the data received
+      //Serial.println(rsc.status.getResponseDescription());
+    }
+    len = rsc.data.length();
     
+
     //A) send to VESC
     Serial.print(len);
     Serial.print('L');
@@ -288,6 +321,30 @@ void loop() {
 
   //delay(10);
 
+  // send lora buffer if possible
+  // send only in defined intervals within a specific time window
+  long sendWindow = 300;
+  len = loraToSend.size();
+  if (inLoraSendMode && (millis() < lastModeToggleMillis + sendWindow) && len)
+  {   
+     for (int i = 0; i < len; i++)
+        buf[i] = loraToSend.shift();
+        
+    // Send message
+    ResponseStatus rs = e22ttl100.sendMessage(&buf, len);
+    // Check If there is some problem of succesfully send
+    if (rs.code!= 1){
+      Serial.println(rs.getResponseDescription());
+      //TODO resend?
+     }else{
+      Serial.print(len);
+      Serial.print("L");
+      Serial.println();
+      //debugPacket(buf, len);
+    }
+  }
+ 
+ 
 
     // Bluetooth disconnecting
     if (!deviceConnected && oldDeviceConnected) {
@@ -302,4 +359,44 @@ void loop() {
         oldDeviceConnected = deviceConnected;
     }
  //delay(5);
+}
+
+void printParameters(struct Configuration configuration) {
+  DEBUG_PRINTLN("----------------------------------------");
+
+  DEBUG_PRINT(F("HEAD : "));  DEBUG_PRINT(configuration.COMMAND, HEX);DEBUG_PRINT(" ");DEBUG_PRINT(configuration.STARTING_ADDRESS, HEX);DEBUG_PRINT(" ");DEBUG_PRINTLN(configuration.LENGHT, HEX);
+  DEBUG_PRINTLN(F(" "));
+  DEBUG_PRINT(F("AddH : "));  DEBUG_PRINTLN(configuration.ADDH, HEX);
+  DEBUG_PRINT(F("AddL : "));  DEBUG_PRINTLN(configuration.ADDL, HEX);
+  DEBUG_PRINT(F("NetID : "));  DEBUG_PRINTLN(configuration.NETID, HEX);
+  DEBUG_PRINTLN(F(" "));
+  DEBUG_PRINT(F("Chan : "));  DEBUG_PRINT(configuration.CHAN, DEC); DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.getChannelDescription());
+  DEBUG_PRINTLN(F(" "));
+  DEBUG_PRINT(F("SpeedParityBit     : "));  DEBUG_PRINT(configuration.SPED.uartParity, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.SPED.getUARTParityDescription());
+  DEBUG_PRINT(F("SpeedUARTDatte     : "));  DEBUG_PRINT(configuration.SPED.uartBaudRate, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.SPED.getUARTBaudRateDescription());
+  DEBUG_PRINT(F("SpeedAirDataRate   : "));  DEBUG_PRINT(configuration.SPED.airDataRate, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.SPED.getAirDataRateDescription());
+  DEBUG_PRINTLN(F(" "));
+  DEBUG_PRINT(F("OptionSubPacketSett: "));  DEBUG_PRINT(configuration.OPTION.subPacketSetting, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.OPTION.getSubPacketSetting());
+  DEBUG_PRINT(F("OptionTranPower    : "));  DEBUG_PRINT(configuration.OPTION.transmissionPower, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.OPTION.getTransmissionPowerDescription());
+  DEBUG_PRINT(F("OptionRSSIAmbientNo: "));  DEBUG_PRINT(configuration.OPTION.RSSIAmbientNoise, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.OPTION.getRSSIAmbientNoiseEnable());
+  DEBUG_PRINTLN(F(" "));
+  DEBUG_PRINT(F("TransModeWORPeriod : "));  DEBUG_PRINT(configuration.TRANSMISSION_MODE.WORPeriod, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.TRANSMISSION_MODE.getWORPeriodByParamsDescription());
+  DEBUG_PRINT(F("TransModeTransContr: "));  DEBUG_PRINT(configuration.TRANSMISSION_MODE.WORTransceiverControl, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.TRANSMISSION_MODE.getWORTransceiverControlDescription());
+  DEBUG_PRINT(F("TransModeEnableLBT : "));  DEBUG_PRINT(configuration.TRANSMISSION_MODE.enableLBT, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.TRANSMISSION_MODE.getLBTEnableByteDescription());
+  DEBUG_PRINT(F("TransModeEnableRSSI: "));  DEBUG_PRINT(configuration.TRANSMISSION_MODE.enableRSSI, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.TRANSMISSION_MODE.getRSSIEnableByteDescription());
+  DEBUG_PRINT(F("TransModeEnabRepeat: "));  DEBUG_PRINT(configuration.TRANSMISSION_MODE.enableRepeater, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.TRANSMISSION_MODE.getRepeaterModeEnableByteDescription());
+  DEBUG_PRINT(F("TransModeFixedTrans: "));  DEBUG_PRINT(configuration.TRANSMISSION_MODE.fixedTransmission, BIN);DEBUG_PRINT(" -> "); DEBUG_PRINTLN(configuration.TRANSMISSION_MODE.getFixedTransmissionDescription());
+
+
+  DEBUG_PRINTLN("----------------------------------------");
+}
+void printModuleInformation(struct ModuleInformation moduleInformation) {
+  Serial.println("----------------------------------------");
+  DEBUG_PRINT(F("HEAD: "));  DEBUG_PRINT(moduleInformation.COMMAND, HEX);DEBUG_PRINT(" ");DEBUG_PRINT(moduleInformation.STARTING_ADDRESS, HEX);DEBUG_PRINT(" ");DEBUG_PRINTLN(moduleInformation.LENGHT, DEC);
+
+  Serial.print(F("Model no.: "));  Serial.println(moduleInformation.model, DEC);
+  Serial.print(F("Version  : "));  Serial.println(moduleInformation.version, DEC);
+  Serial.print(F("Features : "));  Serial.println(moduleInformation.features, BIN);
+  Serial.println("----------------------------------------");
+
 }
