@@ -25,7 +25,7 @@ VESC extender
 #define BUTTON_1 35
 #define BUTTON_2 0
 
-//#define LoRa_E22_DEBUG
+#define LoRa_E22_DEBUG
 // EByte module connection
 #define EB_M0 21
 #define EB_M1 22
@@ -40,13 +40,15 @@ VESC extender
 //#define VESC_RX 17
 //#define VESC_TX 32
 
-//TODO adapt time, 1000000 = 1 time per second, e.g. 1000000/10 => 10 times per second
-#define LORA_SYNC_TIMER 4000000
+//TODO adapt time, 1000000 = 1 time per second,
+//e.g. 1000000 => 10 times per second
+#define LORA_SYNC_TIMER 100000
 // send only in defined intervals within a specific time window (window in ms)
-long sendWindow = 70;
+long sendWindow = 60;
 
 //LoRa_E22 e22ttl100(&Serial2, EB_TX, EB_RX, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
-LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
+//LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600, SERIAL_8N1); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
+LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600, SERIAL_8N1); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
 
 TFT_eSPI tft = TFT_eSPI(135, 240); // Invoke custom library
 
@@ -157,15 +159,16 @@ void setup() {
   Configuration configuration = *(Configuration*) c.data;
   Serial.println(c.status.getResponseDescription());
   Serial.println(c.status.code);
-//  printParameters(configuration);
+  printParameters(configuration);
   configuration.ADDL = 0x03;
   configuration.ADDH = 0x00;
   configuration.NETID = 0x00;
   configuration.CHAN = 23;
-  configuration.SPED.uartBaudRate = UART_BPS_9600;
-  //configuration.SPED.uartBaudRate = UART_BPS_38400;
+  //configuration.SPED.uartBaudRate = UART_BPS_9600;
+  configuration.SPED.uartBaudRate = UART_BPS_115200;
   //configuration.SPED.airDataRate = AIR_DATA_RATE_010_24;
-  configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
+  configuration.SPED.airDataRate = AIR_DATA_RATE_110_384;
   configuration.SPED.uartParity = MODE_00_8N1;
   configuration.OPTION.subPacketSetting = SPS_240_00;
   configuration.OPTION.RSSIAmbientNoise = RSSI_AMBIENT_NOISE_DISABLED;
@@ -196,6 +199,13 @@ void setup() {
   Serial.println(cMi.status.code);
   cMi.close(); 
   c.close(); */
+
+  //workaround to change baudrate on hw serial
+  delay(1000);
+  Serial2.flush();
+  delay(1000);
+  Serial2.begin(115200, SERIAL_8N1, EB_TX, EB_RX);
+  //Serial2.begin(115200);
 
   // Create the BLE Device
   BLEDevice::init("Vesc Extender");
@@ -300,7 +310,7 @@ void loop() {
       firstPaketInPeriod = false;   //is set true in ISR
       lastModeToggleMillis = millis();
       inLoraSendMode = false;
-      Serial.println("first paket received -> timer reset");
+      //Serial.println("first paket received -> timer reset");
     }
      
     ResponseContainer rsc = e22ttl100.receiveMessage();
@@ -380,7 +390,7 @@ void loop() {
       firstPaketInPeriod = false;   //is set true in ISR
       lastModeToggleMillis = millis();
       inLoraSendMode = true;
-      Serial.println("first paket send -> timer reset");
+      //Serial.println("first paket send -> timer reset");
     }
     firstPaketInPeriod = false;
     
