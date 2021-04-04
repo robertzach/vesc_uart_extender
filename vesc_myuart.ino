@@ -40,6 +40,11 @@ VESC extender
 //#define VESC_RX 17
 //#define VESC_TX 32
 
+//TODO adapt time, 1000000 = 1 time per second, e.g. 1000000/10 => 10 times per second
+#define LORA_SYNC_TIMER 4000000
+// send only in defined intervals within a specific time window (window in ms)
+long sendWindow = 70;
+
 //LoRa_E22 e22ttl100(&Serial2, EB_TX, EB_RX, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
 LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
 
@@ -58,6 +63,8 @@ uint8_t bufB[max_buf];
 //used for communication synchrtonisation to avoid packet loss
 volatile bool inLoraSendMode = true;  //toogled in each synchronisation timer interrupt
 volatile long lastModeToggleMillis = millis();    //store millis of last timer interrupt
+volatile bool firstPaketInPeriod = true;  //used to sync communication Times
+int syncPaketNr = 0;    //counts pakets since last sync
 hw_timer_t * timer = NULL;
 byte timerSyncBytes[] = {0xA1, 0xB2, 0xC9};
 //portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -72,8 +79,9 @@ uint8_t txValue = 0;
 void IRAM_ATTR onTime() {
    //portENTER_CRITICAL_ISR(&timerMux);
    inLoraSendMode = !inLoraSendMode;
+   firstPaketInPeriod = true; //reset
    lastModeToggleMillis = millis();
-   Serial.printf("Send Mode switched: %d \n", inLoraSendMode);
+   //Serial.printf("Send Mode switched: %d \n", inLoraSendMode);
    //portEXIT_CRITICAL_ISR(&timerMux);
 }
 
@@ -219,11 +227,11 @@ void setup() {
    timerAttachInterrupt(timer, &onTime, true);
 
    //first sync communication
-   e22ttl100.sendMessage(&timerSyncBytes, sizeof(timerSyncBytes));
-   inLoraSendMode = true;
+   //e22ttl100.sendMessage(&timerSyncBytes, sizeof(timerSyncBytes));
+   //inLoraSendMode = true;
    // Sets an alarm to toogle inLoraSendMode
-   //TODO adapt time, e.g. 1000000/10 => 10 times per second
-   timerAlarmWrite(timer, 1000000, true);           
+   //TODO adapt time, 1000000 = 1 time per second, e.g. 1000000/10 => 10 times per second
+   timerAlarmWrite(timer, LORA_SYNC_TIMER, true);           
    timerAlarmEnable(timer);
   
   Serial.println("Waiting a client connection to notify...");
@@ -285,8 +293,16 @@ void loop() {
   len = 0;
   if (e22ttl100.available())
   {
-     //delay(10);
-     //TODO reset synchronise communication timer
+    //TODO reset synchronise communication timer
+    //sync timer on each first paket in sending period
+    if (firstPaketInPeriod){
+      timerWrite(timer, 0);   //reset timer
+      firstPaketInPeriod = false;   //is set true in ISR
+      lastModeToggleMillis = millis();
+      inLoraSendMode = false;
+      Serial.println("first paket received -> timer reset");
+    }
+     
     ResponseContainer rsc = e22ttl100.receiveMessage();
     if (rsc.status.code!=1){
       Serial.println(rsc.status.getResponseDescription());
@@ -295,19 +311,21 @@ void loop() {
       //copy message
       for (int i = 0; i < rsc.data.length(); i++)
         buf[i] = rsc.data[i];
-        
+
+       /*
       //look for synchronisation bytes, remove if found and reset synchronisation timer
       if (memcmp(timerSyncBytes, buf, sizeof(timerSyncBytes)) == 0) {
         //sync bytes found --> reset timer
-        timerAlarmWrite(timer, 1000000, true);           
-        timerAlarmEnable(timer);
+        timerWrite(timer, 0);
         inLoraSendMode = false;
         Serial.println("resynced timer");
         //remove sync bytes from message
         //TODO check if message has more then sync bytes
         len = 0;
       }
-            
+      */
+      
+      //debugPacket(buf, len);            
       // Print the data received
       //Serial.println(rsc.status.getResponseDescription());
     }
@@ -337,13 +355,35 @@ void loop() {
 
   //delay(10);
 
+  //send timerSyncBytes periodically e.g. every 100 paket
+  /*
+  if (inLoraSendMode && (millis() < lastModeToggleMillis + sendWindow) && syncPaketNr > 10)
+  {
+   //delay(10);   //workaround to send send new paket
+   syncPaketNr = 0;
+   Serial.println("send sync bytes");
+   e22ttl100.sendMessage(&timerSyncBytes, sizeof(timerSyncBytes));
+   inLoraSendMode = true;
+   timerWrite(timer, 0);
+   //delay(10);
+  }
+  */
+   
   // send lora buffer if possible
   // send only in defined intervals within a specific time window
-  long sendWindow = 300;
   len = loraToSend.size();
-  //TODO send timerSyncBytes periodically e.g. every 30s
   if (inLoraSendMode && (millis() < lastModeToggleMillis + sendWindow) && len)
   {   
+    //syncPaketNr++;
+    if (firstPaketInPeriod){
+      timerWrite(timer, 0);   //reset timer
+      firstPaketInPeriod = false;   //is set true in ISR
+      lastModeToggleMillis = millis();
+      inLoraSendMode = true;
+      Serial.println("first paket send -> timer reset");
+    }
+    firstPaketInPeriod = false;
+    
      for (int i = 0; i < len; i++)
         buf[i] = loraToSend.shift();
         
