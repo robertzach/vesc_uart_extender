@@ -59,6 +59,7 @@ uint8_t bufB[max_buf];
 volatile bool inLoraSendMode = true;  //toogled in each synchronisation timer interrupt
 volatile long lastModeToggleMillis = millis();    //store millis of last timer interrupt
 hw_timer_t * timer = NULL;
+byte timerSyncBytes[] = {0xA1, 0xB2, 0xC9};
 //portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
 BLEServer *pServer = NULL;
@@ -216,8 +217,12 @@ void setup() {
    // 80000000 / 80 = 1000000 tics / seconde
    timer = timerBegin(0, 80, true);                
    timerAttachInterrupt(timer, &onTime, true);
-   
-   // Sets an alarm to sound every second
+
+   //first sync communication
+   e22ttl100.sendMessage(&timerSyncBytes, sizeof(timerSyncBytes));
+   inLoraSendMode = true;
+   // Sets an alarm to toogle inLoraSendMode
+   //TODO adapt time, e.g. 1000000/10 => 10 times per second
    timerAlarmWrite(timer, 1000000, true);           
    timerAlarmEnable(timer);
   
@@ -282,20 +287,31 @@ void loop() {
   {
      //delay(10);
      //TODO reset synchronise communication timer
-     //TODO only for first packet in receipe mode\
-     //TODO use specific synchronisation byte for this
     ResponseContainer rsc = e22ttl100.receiveMessage();
     if (rsc.status.code!=1){
       Serial.println(rsc.status.getResponseDescription());
      }else{
+      len = rsc.data.length();
+      //copy message
       for (int i = 0; i < rsc.data.length(); i++)
         buf[i] = rsc.data[i];
+        
+      //look for synchronisation bytes, remove if found and reset synchronisation timer
+      if (memcmp(timerSyncBytes, buf, sizeof(timerSyncBytes)) == 0) {
+        //sync bytes found --> reset timer
+        timerAlarmWrite(timer, 1000000, true);           
+        timerAlarmEnable(timer);
+        inLoraSendMode = false;
+        Serial.println("resynced timer");
+        //remove sync bytes from message
+        //TODO check if message has more then sync bytes
+        len = 0;
+      }
+            
       // Print the data received
       //Serial.println(rsc.status.getResponseDescription());
     }
-    len = rsc.data.length();
     
-
     //A) send to VESC
     Serial.print(len);
     Serial.print('L');
@@ -325,6 +341,7 @@ void loop() {
   // send only in defined intervals within a specific time window
   long sendWindow = 300;
   len = loraToSend.size();
+  //TODO send timerSyncBytes periodically e.g. every 30s
   if (inLoraSendMode && (millis() < lastModeToggleMillis + sendWindow) && len)
   {   
      for (int i = 0; i < len; i++)
@@ -344,8 +361,6 @@ void loop() {
     }
   }
  
- 
-
     // Bluetooth disconnecting
     if (!deviceConnected && oldDeviceConnected) {
         delay(500); // give the bluetooth stack the chance to get things ready
