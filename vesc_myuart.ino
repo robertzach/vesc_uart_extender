@@ -43,15 +43,14 @@ VESC extender
 //TODO adapt time, 1000000 = 1 time per second,
 //e.g. 1000000 => 10 times per second
 #define LORA_SYNC_TIMER 100000
-// send only in defined intervals within a specific time window (window in ms)
-long sendWindow = 60;
+// send only within this time window 
+long sendWindow = 60;   // (in ms)
 
+// setting baudrate on hw serial does not work here, use workaround in setup()
 //LoRa_E22 e22ttl100(&Serial2, EB_TX, EB_RX, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
-//LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600, SERIAL_8N1); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
 LoRa_E22 e22ttl100(EB_TX, EB_RX, &Serial2, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600, SERIAL_8N1); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
 
 TFT_eSPI tft = TFT_eSPI(135, 240); // Invoke custom library
-
 Button2 btn1(BUTTON_1);
 Button2 btn2(BUTTON_2);
 
@@ -60,13 +59,12 @@ Button2 btn2(BUTTON_2);
 static CircularBuffer<uint8_t, 2048> loraToSend;
 const size_t max_buf = 2048;
 uint8_t buf[max_buf];
-uint8_t bufB[max_buf];
+uint8_t bufB[max_buf];    //used in ISR
 
-//used for communication synchrtonisation to avoid packet loss
+//communication synchronisation to avoid two send pakets at the same time
 volatile bool inLoraSendMode = true;  //toogled in each synchronisation timer interrupt
 volatile long lastModeToggleMillis = millis();    //store millis of last timer interrupt
-volatile bool firstPaketInPeriod = true;  //used to sync communication Times
-int syncPaketNr = 0;    //counts pakets since last sync
+volatile bool firstPaketInPeriod = true;    //used to reset timer on each first paket
 hw_timer_t * timer = NULL;
 byte timerSyncBytes[] = {0xA1, 0xB2, 0xC9};
 //portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -99,12 +97,10 @@ void initTDisplay()
   tft.setFreeFont(&FreeMono9pt7b);
 }
 
-
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
     };
-
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
     }
@@ -125,9 +121,9 @@ class MyCallbacks: public BLECharacteristicCallbacks {
           loraToSend.push((uint8_t) rxValue[i]);
           bufB[i] = (uint8_t) rxValue[i];
         }
-
-        //TODO remove this from ISR
+        
         //B) send to serial / VESC 
+        //TODO remove this from ISR
         //Serial.print(rxValue.length());
         //Serial.print('B');
         size_t written = Serial1.write(bufB, rxValue.length()); // Send to Vesc
@@ -165,10 +161,11 @@ void setup() {
   configuration.NETID = 0x00;
   configuration.CHAN = 23;
   //configuration.SPED.uartBaudRate = UART_BPS_9600;
-  configuration.SPED.uartBaudRate = UART_BPS_115200;
+  configuration.SPED.uartBaudRate = UART_BPS_115200;    //workaround set hw serial baudrate manual afterwards!!
   //configuration.SPED.airDataRate = AIR_DATA_RATE_010_24;
   //configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
   configuration.SPED.airDataRate = AIR_DATA_RATE_110_384;
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_111_625;
   configuration.SPED.uartParity = MODE_00_8N1;
   configuration.OPTION.subPacketSetting = SPS_240_00;
   configuration.OPTION.RSSIAmbientNoise = RSSI_AMBIENT_NOISE_DISABLED;
@@ -236,11 +233,8 @@ void setup() {
    timer = timerBegin(0, 80, true);                
    timerAttachInterrupt(timer, &onTime, true);
 
-   //first sync communication
-   //e22ttl100.sendMessage(&timerSyncBytes, sizeof(timerSyncBytes));
-   //inLoraSendMode = true;
    // Sets an alarm to toogle inLoraSendMode
-   //TODO adapt time, 1000000 = 1 time per second, e.g. 1000000/10 => 10 times per second
+   //LORA_SYNC_TIMER: 1000000 = 1 time per second, e.g. 1000000/10 => 10 times per second
    timerAlarmWrite(timer, LORA_SYNC_TIMER, true);           
    timerAlarmEnable(timer);
   
@@ -303,7 +297,6 @@ void loop() {
   len = 0;
   if (e22ttl100.available())
   {
-    //TODO reset synchronise communication timer
     //sync timer on each first paket in sending period
     if (firstPaketInPeriod){
       timerWrite(timer, 0);   //reset timer
@@ -321,19 +314,6 @@ void loop() {
       //copy message
       for (int i = 0; i < rsc.data.length(); i++)
         buf[i] = rsc.data[i];
-
-       /*
-      //look for synchronisation bytes, remove if found and reset synchronisation timer
-      if (memcmp(timerSyncBytes, buf, sizeof(timerSyncBytes)) == 0) {
-        //sync bytes found --> reset timer
-        timerWrite(timer, 0);
-        inLoraSendMode = false;
-        Serial.println("resynced timer");
-        //remove sync bytes from message
-        //TODO check if message has more then sync bytes
-        len = 0;
-      }
-      */
       
       //debugPacket(buf, len);            
       // Print the data received
@@ -363,28 +343,15 @@ void loop() {
     //debugPacket(buf, len);
   }
 
-  //delay(10);
-
-  //send timerSyncBytes periodically e.g. every 100 paket
-  /*
-  if (inLoraSendMode && (millis() < lastModeToggleMillis + sendWindow) && syncPaketNr > 10)
-  {
-   //delay(10);   //workaround to send send new paket
-   syncPaketNr = 0;
-   Serial.println("send sync bytes");
-   e22ttl100.sendMessage(&timerSyncBytes, sizeof(timerSyncBytes));
-   inLoraSendMode = true;
-   timerWrite(timer, 0);
-   //delay(10);
-  }
-  */
    
   // send lora buffer if possible
   // send only in defined intervals within a specific time window
+  //TODO split up large data in multiple messages/pakets
   len = loraToSend.size();
+  if (len > 50)
+    len = 50;
   if (inLoraSendMode && (millis() < lastModeToggleMillis + sendWindow) && len)
   {   
-    //syncPaketNr++;
     if (firstPaketInPeriod){
       timerWrite(timer, 0);   //reset timer
       firstPaketInPeriod = false;   //is set true in ISR
