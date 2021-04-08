@@ -40,9 +40,10 @@ VESC extender
 //#define VESC_TX 32
 
 //TODO adapt time, 1000000 = 1 time per second,
-//e.g. 1000000 => 10 times per second
-#define LORA_SYNC_TIMER 100000
-int txPeriodTimeMs = LORA_SYNC_TIMER / 10000;
+//e.g. 1000000 => 1 time per second
+//e.g. 100000 => 10 times per second
+#define LORA_SYNC_TIMER 1000000
+long txPeriodTimeMs = LORA_SYNC_TIMER / 1000;
 int airDataRate = 19200; //change it based on used air data baudrate, TODO get from ebyte config
 
 // setting baudrate on hw serial does not work here, use workaround in setup()
@@ -64,6 +65,7 @@ uint8_t bufB[max_buf];    //used in ISR
 volatile bool inLoraSendMode = true;  //toogled in each synchronisation timer interrupt
 volatile long lastModeToggleMillis = millis();    //store millis of last timer interrupt
 volatile bool firstPaketInPeriod = true;    //reset timer on each first paket in period
+volatile int bytesSend = 0;    //store bytes allready send in period
 hw_timer_t * timer = NULL;
 //portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -79,6 +81,7 @@ void IRAM_ATTR onTime() {
    inLoraSendMode = !inLoraSendMode;
    firstPaketInPeriod = true; //reset
    lastModeToggleMillis = millis();
+   bytesSend = 0;
    //Serial.printf("Send Mode switched: %d \n", inLoraSendMode);
    //portEXIT_CRITICAL_ISR(&timerMux);
 }
@@ -350,8 +353,9 @@ void loop() {
   // send lora buffer. send only in defined intervals within a specific time window
   // split up large data in multiple messages/pakets
   // calculate possible bytes for remaining send window
-  int possibleBytes = ( lastModeToggleMillis + txPeriodTimeMs - millis() ) * (airDataRate / 8.0 * 0.001) ;   // remaining send windows in ms * bytes per ms --> remaining bytes
-  possibleBytes = possibleBytes - 4;  //safty margin
+  long possibleBytes = ( lastModeToggleMillis + txPeriodTimeMs - millis() ) * (airDataRate / 8.0 * 0.001) ;   // remaining send windows in ms * bytes per ms --> remaining bytes
+  
+  possibleBytes = possibleBytes - bytesSend - 10;  //safty margin
   if (possibleBytes < 0 )
     possibleBytes = 0;
 
@@ -371,7 +375,7 @@ void loop() {
     
      for (int i = 0; i < len; i++)
         buf[i] = loraToSend.shift();
-        
+
     // Send message
     ResponseStatus rs = e22ttl100.sendMessage(&buf, len);
     // Check If there is some problem of succesfully send
@@ -379,6 +383,7 @@ void loop() {
       Serial.println(rs.getResponseDescription());
       //TODO resend?
      }else{
+      bytesSend = bytesSend + len;
       Serial.print(possibleBytes);
       Serial.print("P");
       Serial.print(len);
