@@ -42,7 +42,7 @@ VESC extender
 //TODO adapt time, 1000000 = 1 time per second,
 //e.g. 1000000 => 1 time per second
 //e.g. 100000 => 10 times per second
-#define LORA_SYNC_TIMER 1000000
+#define LORA_SYNC_TIMER 100000
 long txPeriodTimeMs = LORA_SYNC_TIMER / 1000;
 int airDataRate = 19200; //change it based on used air data baudrate, TODO get from ebyte config
 
@@ -355,7 +355,7 @@ void loop() {
   // calculate possible bytes for remaining send window
   long possibleBytes = ( lastModeToggleMillis + txPeriodTimeMs - millis() ) * (airDataRate / 8.0 * 0.001) ;   // remaining send windows in ms * bytes per ms --> remaining bytes
   
-  possibleBytes = possibleBytes - bytesSend - 10;  //safty margin
+  possibleBytes = possibleBytes - bytesSend - 40;  //safty margin
   if (possibleBytes < 0 )
     possibleBytes = 0;
 
