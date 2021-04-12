@@ -352,7 +352,8 @@ void loop() {
     //debugPacket(buf, len);
   }
 
-   
+  //delay(5);
+  
   len = loraToSend.size();
   if (len) {
 #ifdef ENABLE_SYNCHRONISATION
