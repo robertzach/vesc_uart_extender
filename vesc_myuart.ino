@@ -31,7 +31,6 @@ VESC extender
 #define EB_RX 17
 #define EB_TX 32
 #define EB_AUX 33
-#define HARDWARE_SERIAL_SELECTABLE_PIN
 
 // Vesc serial connection
 #define VESC_RX 26
@@ -39,8 +38,9 @@ VESC extender
 //#define VESC_RX 17
 //#define VESC_TX 32
 
-#define SET_EBYTE_CONFIG_WITH_LIB   false
-
+//#define SET_EBYTE_CONFIG_WITH_LIB
+//#define ENABLE_SYNCHRONISATION
+#define HARDWARE_SERIAL_SELECTABLE_PIN
 
 //TODO adapt time, 1000000 = 1 time per second,
 //e.g. 1000000 => 1 time per second
@@ -153,56 +153,56 @@ void setup() {
   //pinMode(EB_AUX, INPUT); //ebyte is ready if high
   // Startup all pins and UART
   e22ttl100.begin();
-  if (SET_EBYTE_CONFIG_WITH_LIB) {
-        ResponseStructContainer c;
-        c = e22ttl100.getConfiguration();
-        // It's important get configuration pointer before all other operation
-        Configuration configuration = *(Configuration*) c.data;
-        Serial.println(c.status.getResponseDescription());
-        Serial.println(c.status.code);
-        printParameters(configuration);
-        configuration.ADDL = 0x03;
-        configuration.ADDH = 0x00;
-        configuration.NETID = 0x00;
-        configuration.CHAN = 23;
-        //configuration.SPED.uartBaudRate = UART_BPS_9600;
-        configuration.SPED.uartBaudRate = UART_BPS_57600;   //workaround set hw serial baudrate manual afterwards too!!
-        //configuration.SPED.airDataRate = AIR_DATA_RATE_010_24;
-        //configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
-        configuration.SPED.airDataRate = AIR_DATA_RATE_101_192;
-        //configuration.SPED.airDataRate = AIR_DATA_RATE_111_625;
-        configuration.SPED.uartParity = MODE_00_8N1;
-        configuration.OPTION.subPacketSetting = SPS_240_00;
-        configuration.OPTION.RSSIAmbientNoise = RSSI_AMBIENT_NOISE_DISABLED;
-        configuration.OPTION.transmissionPower = POWER_22;
-        configuration.TRANSMISSION_MODE.enableRSSI = RSSI_DISABLED;
-        configuration.TRANSMISSION_MODE.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
-        configuration.TRANSMISSION_MODE.enableRepeater = REPEATER_DISABLED;
-        configuration.TRANSMISSION_MODE.enableLBT = LBT_DISABLED;
-        configuration.TRANSMISSION_MODE.WORTransceiverControl = WOR_RECEIVER;
-        configuration.TRANSMISSION_MODE.WORPeriod = WOR_2000_011;
-        // Set configuration changed and set to not hold the configuration
-        //ResponseStatus rs = e22ttl100.setConfiguration(configuration, WRITE_CFG_PWR_DWN_SAVE);
-        //Serial.println(rs.getResponseDescription());
-        //Serial.println(rs.code);
-      
-        c = e22ttl100.getConfiguration();
-        // It's important get configuration pointer before all other operation
-        configuration = *(Configuration*) c.data;
-        Serial.println(c.status.getResponseDescription());
-        Serial.println(c.status.code);
-        printParameters(configuration);
-        /*
-        ResponseStructContainer cMi;
-        cMi = e22ttl100.getModuleInformation();
-        // It's important get information pointer before all other operation
-        ModuleInformation mi = *(ModuleInformation*)cMi.data;
-        Serial.println(cMi.status.getResponseDescription());
-        Serial.println(cMi.status.code);
-        cMi.close(); 
-        c.close(); */
+#ifdef SET_EBYTE_CONFIG_WITH_LIB
+  ResponseStructContainer c;
+  c = e22ttl100.getConfiguration();
+  // It's important get configuration pointer before all other operation
+  Configuration configuration = *(Configuration*) c.data;
+  Serial.println(c.status.getResponseDescription());
+  Serial.println(c.status.code);
+  printParameters(configuration);
+  configuration.ADDL = 0x03;
+  configuration.ADDH = 0x00;
+  configuration.NETID = 0x00;
+  configuration.CHAN = 23;
+  //configuration.SPED.uartBaudRate = UART_BPS_9600;
+  configuration.SPED.uartBaudRate = UART_BPS_57600;   //workaround set hw serial baudrate manual afterwards too!!
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_010_24;
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
+  configuration.SPED.airDataRate = AIR_DATA_RATE_101_192;
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_111_625;
+  configuration.SPED.uartParity = MODE_00_8N1;
+  configuration.OPTION.subPacketSetting = SPS_240_00;
+  configuration.OPTION.RSSIAmbientNoise = RSSI_AMBIENT_NOISE_DISABLED;
+  configuration.OPTION.transmissionPower = POWER_22;
+  configuration.TRANSMISSION_MODE.enableRSSI = RSSI_DISABLED;
+  configuration.TRANSMISSION_MODE.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
+  configuration.TRANSMISSION_MODE.enableRepeater = REPEATER_DISABLED;
+  configuration.TRANSMISSION_MODE.enableLBT = LBT_DISABLED;
+  configuration.TRANSMISSION_MODE.WORTransceiverControl = WOR_RECEIVER;
+  configuration.TRANSMISSION_MODE.WORPeriod = WOR_2000_011;
+  // Set configuration changed and set to not hold the configuration
+  ResponseStatus rs = e22ttl100.setConfiguration(configuration, WRITE_CFG_PWR_DWN_SAVE);
+  Serial.println(rs.getResponseDescription());
+  Serial.println(rs.code);
+  c = e22ttl100.getConfiguration();
+  // It's important get configuration pointer before all other operation
+  configuration = *(Configuration*) c.data;
+  Serial.println(c.status.getResponseDescription());
+  Serial.println(c.status.code);
+  printParameters(configuration);
+  /*
+  ResponseStructContainer cMi;
+  cMi = e22ttl100.getModuleInformation();
+  // It's important get information pointer before all other operation
+  ModuleInformation mi = *(ModuleInformation*)cMi.data;
+  Serial.println(cMi.status.getResponseDescription());
+  Serial.println(cMi.status.code);
+  cMi.close(); 
+  c.close(); */
+#endif
 
-  //workaround to change baudrate on hw serial
+  //workaround to change baudrate on ebyte serial
   delay(1000);
   Serial2.flush();
   delay(1000);
@@ -353,52 +353,55 @@ void loop() {
   }
 
    
-  // send lora buffer. send only in defined intervals within a specific time window
-  // split up large data in multiple messages/pakets
-  // calculate possible bytes for remaining send window
-//  long possibleBytes = ( lastModeToggleMillis + txPeriodTimeMs - millis() ) * (airDataRate / 8.0 * 0.001) ;   // remaining send windows in ms * bytes per ms --> remaining bytes
-  
-//  possibleBytes = possibleBytes - bytesSend - 40;  //safty margin
-//  if (possibleBytes < 0 )
-//    possibleBytes = 0;
-
- delay(10);
-
   len = loraToSend.size();
   if (len) {
-/*  if (len > possibleBytes)
-    len = possibleBytes;  
-  if (inLoraSendMode && len)
-  {   
-    if (firstPaketInPeriod){
-      timerWrite(timer, 0);   //reset timer
-      firstPaketInPeriod = false;   //is set true in ISR
-      lastModeToggleMillis = millis();
-      inLoraSendMode = true;
-      //Serial.println("first paket send -> timer reset");
-    }
-    firstPaketInPeriod = false;
-*/    
+#ifdef ENABLE_SYNCHRONISATION
+      // send lora buffer. send only in defined intervals within a specific time window
+      // split up large data in multiple messages/pakets
+      // calculate possible bytes for remaining send window
+      long possibleBytes = ( lastModeToggleMillis + txPeriodTimeMs - millis() ) * (airDataRate / 8.0 * 0.001) ;   // remaining send windows in ms * bytes per ms --> remaining bytes
+      possibleBytes = possibleBytes - bytesSend - 40;  //TODO adopt safty margin
+      if (possibleBytes < 0 )
+         possibleBytes = 0;
+      if (len > possibleBytes)
+        len = possibleBytes;
+        
+      if (inLoraSendMode) {   // only go on in send mode
+             if (firstPaketInPeriod){   // sync on first message in period
+                timerWrite(timer, 0);   // reset timer
+                firstPaketInPeriod = false;   //is set true in ISR
+                lastModeToggleMillis = millis();
+                inLoraSendMode = true;
+                //Serial.println("first paket send -> timer reset");
+             }
+             firstPaketInPeriod = false;
+#endif  
+
      for (int i = 0; i < len; i++)
         buf[i] = loraToSend.shift();
-
     // Send message
     ResponseStatus rs = e22ttl100.sendMessage(&buf, len);
     // Check If there is some problem of succesfully send
     if (rs.code!= 1){
       Serial.println(rs.getResponseDescription());
       //TODO resend?
-     }else{
-      bytesSend = bytesSend + len;
-//      Serial.print(possibleBytes);
-//      Serial.print("P");
-      Serial.print(len);
-      Serial.print("L");
-      Serial.println();
-      //debugPacket(buf, len);
+     }else{   //successfully send
+        bytesSend = bytesSend + len;
+#ifdef ENABLE_SYNCHRONISATION
+        Serial.print(possibleBytes);
+        Serial.print("P");
+#endif        
+        Serial.print(len);
+        Serial.print("L");
+        Serial.println();
+        //debugPacket(buf, len);
     }
+#ifdef ENABLE_SYNCHRONISATION
+   }
+#endif
   }
- 
+
+
     // Bluetooth disconnecting
     if (!deviceConnected && oldDeviceConnected) {
         delay(500); // give the bluetooth stack the chance to get things ready
