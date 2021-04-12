@@ -42,12 +42,14 @@ VESC extender
 //#define ENABLE_SYNCHRONISATION
 #define HARDWARE_SERIAL_SELECTABLE_PIN
 
+#define LORA_SPARE_TIME_PERCENT   25;   // free time withing send window
 //TODO adapt time, 1000000 = 1 time per second,
 //e.g. 1000000 => 1 time per second
 //e.g. 100000 => 10 times per second
 #define LORA_SYNC_TIMER 100000
 long txPeriodTimeMs = LORA_SYNC_TIMER / 1000;
 int airDataRate = 19200; //change it based on used air data baudrate, TODO get from ebyte config
+int bytesPerPeriod = 0;  //calculated on setup
 
 // setting baudrate on hw serial does not work here, use workaround in setup()
 //LoRa_E22 e22ttl100(&Serial2, EB_TX, EB_RX, EB_AUX, EB_M0, EB_M1, UART_BPS_RATE_9600); //  esp32 RX <-- e22 TX, esp32 TX --> e22 RX AUX M0 M1
@@ -70,6 +72,7 @@ volatile long lastModeToggleMillis = millis();    //store millis of last timer i
 volatile bool firstPaketInPeriod = true;    //reset timer on each first paket in period
 volatile int bytesSend = 0;    //store bytes allready send in period
 hw_timer_t * timer = NULL;
+
 //portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
 BLEServer *pServer = NULL;
@@ -244,7 +247,7 @@ void setup() {
   
   Serial.printf("tx period in ms: %d\n", txPeriodTimeMs);
   //calculate possible bytes per send period
-  int bytesPerPeriod = (airDataRate / 8) / 2.0 * txPeriodTimeMs / 1000.0 ;
+  bytesPerPeriod = (airDataRate / 8) / 2.0 * txPeriodTimeMs / 1000.0 ;
   Serial.printf("Air data rate: %d --> calculated bytes per tx period: %d\n", airDataRate, bytesPerPeriod);
   
   Serial.println("Waiting a client connection to notify...");
@@ -361,7 +364,7 @@ void loop() {
       // split up large data in multiple messages/pakets
       // calculate possible bytes for remaining send window
       long possibleBytes = ( lastModeToggleMillis + txPeriodTimeMs - millis() ) * (airDataRate / 8.0 * 0.001) ;   // remaining send windows in ms * bytes per ms --> remaining bytes
-      possibleBytes = possibleBytes - bytesSend - 40;  //TODO adopt safty margin
+      possibleBytes = possibleBytes - bytesSend - bytesPerPeriod/100 * LORA_SPARE_TIME_PERCENT;
       if (possibleBytes < 0 )
          possibleBytes = 0;
       if (len > possibleBytes)
