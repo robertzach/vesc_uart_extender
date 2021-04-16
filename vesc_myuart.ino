@@ -38,17 +38,18 @@ VESC extender
 //#define VESC_RX 17
 //#define VESC_TX 32
 
-//#define SET_EBYTE_CONFIG_WITH_LIB
-//#define ENABLE_SYNCHRONISATION
+#define SET_EBYTE_CONFIG_WITH_LIB
+#define ENABLE_SYNCHRONISATION
 #define HARDWARE_SERIAL_SELECTABLE_PIN
 
-#define LORA_SPARE_TIME_PERCENT   25;   // free time withing send window
+#define LORA_SPARE_TIME_PERCENT   30;   // free time withing send window
 //TODO adapt time, 1000000 = 1 time per second,
 //e.g. 1000000 => 1 time per second
 //e.g. 100000 => 10 times per second
-#define LORA_SYNC_TIMER 100000
+//#define LORA_SYNC_TIMER 100000
+#define LORA_SYNC_TIMER 200000
 long txPeriodTimeMs = LORA_SYNC_TIMER / 1000;
-int airDataRate = 19200; //change it based on used air data baudrate, TODO get from ebyte config
+int airDataRate = 9600; //change it based on used air data baudrate, TODO get from ebyte config
 int bytesPerPeriod = 0;  //calculated on setup
 
 // setting baudrate on hw serial does not work here, use workaround in setup()
@@ -170,9 +171,10 @@ void setup() {
   configuration.CHAN = 23;
   //configuration.SPED.uartBaudRate = UART_BPS_9600;
   configuration.SPED.uartBaudRate = UART_BPS_57600;   //workaround set hw serial baudrate manual afterwards too!!
+  //configuration.SPED.uartBaudRate = UART_BPS_115200; //workaround set hw serial baudrate manual afterwards too!!
   //configuration.SPED.airDataRate = AIR_DATA_RATE_010_24;
-  //configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
-  configuration.SPED.airDataRate = AIR_DATA_RATE_101_192;
+  configuration.SPED.airDataRate = AIR_DATA_RATE_100_96;
+  //configuration.SPED.airDataRate = AIR_DATA_RATE_101_192;
   //configuration.SPED.airDataRate = AIR_DATA_RATE_111_625;
   configuration.SPED.uartParity = MODE_00_8N1;
   configuration.OPTION.subPacketSetting = SPS_240_00;
@@ -203,6 +205,7 @@ void setup() {
   Serial.println(cMi.status.code);
   cMi.close(); 
   c.close(); */
+
 #endif
 
   //workaround to change baudrate on ebyte serial
@@ -210,6 +213,7 @@ void setup() {
   Serial2.flush();
   delay(1000);
   Serial2.begin(57600, SERIAL_8N1, EB_TX, EB_RX);
+  
   
   // Create the BLE Device
   BLEDevice::init("Vesc Extender");
